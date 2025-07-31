@@ -1,0 +1,23 @@
+{
+  "name": "razorpages.reactts",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "build:jsx": "node scripts/build-jsx.js production",
+    "watch:jsx": "node scripts/build-jsx.js"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "chokidar": "^4.0.3",
+    "esbuild": "^0.25.8",
+    "typescript": "^5.8.3"
+  },
+  "author": "shuangchao xu",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "axios": "^1.11.0"
+  }
+}
