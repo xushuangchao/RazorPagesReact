@@ -61,8 +61,8 @@
 <script>
     // 全局初始化
     document.addEventListener('DOMContentLoaded', function () {
-            // 将库挂载到window
-            window.React = React;
+        // 将库挂载到window
+        window.React = React;
         window.ReactDOM = ReactDOM;
         window.axios = axios;
 
@@ -76,7 +76,7 @@
 
             // --如果是 httpClient 相关组件，先加载工具类--
             // if (scriptPath.includes('User'))
-            //     loadQueue.push('~/js/utils/httpClient.js');
+            //     loadQueue.push('/js/utils/httpClient.js');
             // 始终优先加载工具类
             loadQueue.push('/js/utils/httpClient.js');
             loadQueue.push('/js/utils/Test.js');
