@@ -1,17 +1,24 @@
 import esbuild from "esbuild";
 import path from "path";
 import chokidar from "chokidar";
-import fs from "fs";
-import { fileURLToPath } from "url";
-import { checkDependency } from "./dependency-checker.js";
+import fs from "fs/promises";
+import ts from "typescript";
+import {
+    config
+} from "./config.js";
+import {
+    checkDependency
+} from "./dependency-checker.js";
 
-// 获取当前文件的目录路径
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// 路径配置
-const sourceDir = path.join(__dirname, "../PagesScripts");
-const outputDir = path.join(__dirname, "../wwwroot/js");
+// 解构配置
+const {
+    sourceDir,
+    outputDir,
+    alias,
+    allowedExternals,
+    buildTargets,
+    watchIgnore
+} = config;
 
 // 环境判断
 const isProduction = process.argv.includes('production');
@@ -19,11 +26,13 @@ const isDevelopment = !isProduction;
 
 // 存储文件依赖关系
 const dependencyGraph = new Map();
+// 跟踪正在编译的文件（放置循环依赖）
+const compilingFiles = new Set();
 
 // ESBuild 配置
 const baseBuildOptions = {
     bundle: true,
-    target: ['es2015'],
+    target: buildTargets,
     format: 'esm',
     loader: {
         '.ts': 'ts',
@@ -31,71 +40,102 @@ const baseBuildOptions = {
     },
     jsx: 'transform',
     outdir: outputDir,
-    inject: [path.join(sourceDir, 'globals.d.ts')],
-    external: [],
+    external: allowedExternals,
     minify: isProduction,
     sourcemap: isDevelopment ? 'inline' : false,
     // 别名配置
-    alias: {
-        'utils/httpClient': path.join(sourceDir, 'utils/httpClient.ts'),
-        'utils/Test': path.join(sourceDir, 'utils/Test.ts'),
-    }
+    alias: alias,
+    treeShaking: isProduction, // 生产环境启用树摇
+    legalComments: 'external' // 生产环境移除注释
 };
 
 /**
- * 分析文件依赖关系
+ * 使用TS解析器分析文件依赖
  * @param filePath 文件路径
  */
-const analyzeDependencies = (filePath) => {
+const analyzeDependencies = async (filePath) => {
     const fullPath = path.resolve(filePath);
-    const content = fs.readFileSync(fullPath, 'utf8');
-    const importRegex = /import\s+(?:.*?\s+from\s+)?['"]([^'"]+)['"]/g;
 
-    const dependencies = [];
-    let match;
+    try {
+        // 同步读取（分析依赖时阻塞可以接受）
+        const content = fs.readFileSync ? fs.readFileSync(fullPath, 'utf8') : await fs.readFile(fullPath, 'utf8');
 
-    while ((match = importRegex.exec(content)) !== null) {
-        const importPath = match[1];
+        // 使用TS解析器生成原文件
+        const sourceFile = ts.createSourceFile(
+            fullPath,
+            content,
+            ts.ScriptTarget.ES2015,
+            true
+        );
 
-        // 处理相对路径导入
-        if (importPath.startsWith('./') || importPath.startsWith('../')) {
-            const resolvedPath = path.resolve(path.dirname(fullPath), importPath);
-            // 添加 .ts 和 .tsx 扩展名尝试
-            const possiblePaths = [
-                resolvedPath,
-                resolvedPath + '.ts',
-                resolvedPath + '.tsx',
-                path.join(resolvedPath, 'index.ts'),
-                path.join(resolvedPath, 'index.tsx')
-            ];
+        const dependencies = [];
 
-            for (const possiblePath of possiblePaths) {
-                if (fs.existsSync(possiblePath)) {
-                    dependencies.push(possiblePath);
-                    break;
+        // 遍历所有导入声明
+        ts.forEachChild(sourceFile, (node) => {
+            if (ts.isImportDeclaration(node) && node.moduleSpecifier) {
+                const importPath = ts.isStringLiteral(node.moduleSpecifier) ?
+                    node.moduleSpecifier.text : '';
+
+                if (!importPath) return;
+
+                // 处理相对路径导入
+                if (importPath.startsWith('./') || importPath.startsWith('../')) {
+                    const resolvedPath = path.resolve(path.dirname(fullPath), importPath);
+                    const possiblePaths = [
+                        resolvedPath,
+                        resolvedPath + '.ts',
+                        resolvedPath + '.tsx',
+                        path.join(resolvedPath, 'index.ts'),
+                        path.join(resolvedPath, 'index.tsx')
+                    ];
+
+                    const checkPathExists = async (path) => {
+                        try {
+                            await fs.access(path);
+                            return true;
+                        } catch {
+                            return false;
+                        }
+                    };
+                    
+                    // 寻找有效的文件路径
+                    (async () => {
+                        for (const possiblePath of possiblePaths) {
+                            if (await checkPathExists(possiblePath)) {
+                                dependencies.push(possiblePath);
+                                break;
+                            }
+                        }
+                    })();
+                }
+                // 处理别名导入
+                else if (importPath.startsWith('utils/')) {
+                    const resolvedPath = path.join(sourceDir, importPath + '.ts');
+
+                    (async () => {
+                        if (fs.existsSync(resolvedPath)) {
+                            dependencies.push(resolvedPath);
+                        }
+                    })();
                 }
             }
-        }
-        // 处理别名导入
-        else if (importPath.startsWith('utils/')) {
-            const resolvedPath = path.join(sourceDir, importPath + '.ts');
-            if (fs.existsSync(resolvedPath)) {
-                dependencies.push(resolvedPath);
-            }
-        }
-    }
+        });
 
-    // 更新依赖图
-    dependencyGraph.set(fullPath, dependencies);
+        // 更新依赖图
+        dependencyGraph.set(fullPath, dependencies);
 
-    // 更新反向依赖关系（哪些文件依赖于当前文件）
-    for (const [file, deps] of dependencyGraph.entries()) {
-        if (deps.includes(fullPath) && file !== fullPath) {
-            if (!dependencyGraph.has('reverse:' + fullPath)) {
-                dependencyGraph.set('reverse:' + fullPath, []);
+        // 更新反向依赖关系（哪些文件依赖于当前文件）
+        dependencies.forEach(depPath => {
+            const reverseKey = `reverse:${depPath}`;
+            if (!dependencyGraph.has(reverseKey)) {
+                dependencyGraph.set(reverseKey, []);
             }
-            dependencyGraph.get('reverse:' + fullPath).push(file);
-        }
+            if (!dependencyGraph.get(reverseKey).includes(fullPath)) {
+                dependencyGraph.get(reverseKey).push(fullPath);
+            }
+        });
+    } catch (error) {
+        console.error(`❌ 依赖分析失败：${filePath}`, error);
     }
 };
 
@@ -106,35 +146,41 @@ const analyzeDependencies = (filePath) => {
  */
 const getDependentFiles = (filePath) => {
     const fullPath = path.resolve(filePath);
-    const reverseKey = 'reverse:' + fullPath;
+    const reverseKey = `reverse:${fullPath}`;
     return dependencyGraph.has(reverseKey) ? dependencyGraph.get(reverseKey) : [];
 };
 
 /**
  * 编译单个文件
- * @param (string) filePath 源文件路径
+ * @param filePath 源文件路径
  */
 const compileFile = async (filePath) => {
-    // 确保是完整路径
     const fullPath = path.resolve(filePath);
     const relativePath = path.relative(sourceDir, fullPath);
-    const parsedPath = path.parse(relativePath);
-    const outPath = path.join(outputDir, parsedPath.dir, parsedPath.name + '.js');
 
-    console.log(`🔄 正在编译: ${relativePath}`);
-
-    // 依赖检查
-    const unsafeImports = checkDependency(fullPath);
-    if (unsafeImports.length > 0) {
-        console.error(`⚠️ 在 ${relativePath} 中发现未声明的依赖：`);
-        unsafeImports.forEach(({ dependency }) => console.error(`   - ${dependency}`));
-        if (isProduction) {
-            console.error('生产构建终止');
-            process.exit(1);
-        }
+    // 避免重复编译
+    if (compilingFiles.has(fullPath)) {
+        console.log(`⏩ 跳过编译（处理中）: ${relativePath}`);
+        return;
     }
 
+    console.log(`🔄 正在编译: ${relativePath}`);
+    compilingFiles.add(fullPath);
+
     try {
+        // 依赖检查
+        const unsafeImports = checkDependency(fullPath);
+        if (unsafeImports.length > 0) {
+            console.error(`⚠️ 在 ${relativePath} 中发现未声明的依赖：`);
+            unsafeImports.forEach(({
+                                       dependency
+                                   }) => console.error(`   - ${dependency}`));
+            if (isProduction) {
+                console.error('生产构建终止');
+                process.exit(1);
+            }
+        }
+
         await esbuild.build({
             ...baseBuildOptions,
             entryPoints: [fullPath],
@@ -142,20 +188,32 @@ const compileFile = async (filePath) => {
             outdir: outputDir,
             entryNames: path.join(path.dirname(relativePath), '[name]'),
         });
+
+        const outPath = path.join(outputDir, path.dirname(relativePath), path.basename(fullPath, path.extName(fullPath)) + '.js');
         console.log(`✅ 编译成功: ${relativePath} -> ${path.relative(outputDir, outPath)}`);
 
-        // 分析并存储该文件的依赖关系
+        // 分析依赖
         analyzeDependencies(fullPath);
     } catch (e) {
-        console.error(`❌ 编译失败：${relativePath}`, e.message);
+        console.error(`❌ 编译失败：${relativePath}`);
+        if (e.errors) {
+            e.errors.forEach(err => console.error(`   - ${err.text}`));
+        } else {
+            console.error(`   详情：${e.message}`);
+        }
+    } finally {
+        compilingFiles.delete(fullPath);
     }
 };
 
 /**
- * 编译文件及其依赖者
+ * 编译文件及其依赖者（处理循环依赖）
  * @param filePath 修改的文件路径
  */
 const compileFileWithDependents = async (filePath) => {
+    const fullPath = path.resolve(filePath);
+    if (compilingFiles.has(fullPath)) return;
+
     // 首先编译被修改的文件
     await compileFile(filePath);
 
@@ -164,27 +222,36 @@ const compileFileWithDependents = async (filePath) => {
     if (dependents.length > 0) {
         console.log(`🔄 检测到 ${dependents.length} 个依赖文件需要重新编译`);
         for (const dependent of dependents) {
-            const relativePath = path.relative(sourceDir, dependent);
-            console.log(`🔄 重新编译依赖文件: ${relativePath}`);
-            await compileFile(dependent);
+            await compileFileWithDependents(dependent); // 递归处理
         }
     }
 };
 
 /**
- * 删除输出文件
+ * 删除输出文件并清理依赖
  * @param filePath 源文件路径
  */
-const removeoutputFile = (filePath) => {
-    // 确保是完整路径
+const removeOutputFile = async (filePath) => {
     const fullPath = path.resolve(filePath);
     const relativePath = path.relative(sourceDir, fullPath);
-    const parsedPath = path.parse(relativePath);
-    const outPath = path.join(outputDir, parsedPath.dir, parsedPath.name + '.js');
+    const outPath = path.join(outputDir, path.dirName(relativePath), path.basename(fullPath, path.exname(fullPath)) + '.js');
 
-    if (fs.existsSync(outPath)) {
-        fs.unlinkSync(outPath);
-        console.log(`🗑️ 已删除：${path.relative(outputDir, outPath)}`)
+    try {
+        await fs.access(outPath);
+        await fs.unlink(outPath);
+        console.log(`🗑️ 已删除：${path.relative(outputDir, outPath)}`);
+    } catch (e) {
+        // 文件不存在，不需要处理
+    }
+
+    // 清理依赖图
+    const reverseKey = `reverse:${fullPath}`;
+    // 清理依赖于该文件的条目
+    if (dependencyGraph.has(reverseKey)) {
+        dependencyGraph.get(reverseKey).forEach(depFile => {
+            const deps = dependencyGraph.get(depFile) || [];
+            dependencyGraph.set(depFile, deps.filter(dep => dep != fullPath));
+        })
     }
 
     // 从依赖图中移除该文件
@@ -192,107 +259,114 @@ const removeoutputFile = (filePath) => {
     dependencyGraph.delete('reverse:' + fullPath);
 };
 
-// 获取所有 .ts 和 .tsx 文件
-const getEntryPoints = () => {
+/**
+ * 获取所有入口点
+ * @returns {Promise<*[]>}
+ */
+const getEntryPoints = async () => {
     const entryPoints = [];
-    const getAllFiles = (dir) => {
-        const files = fs.readdirSync(dir);
-        files.forEach(file => {
+    const getAllFiles = async (dir) => {
+        const files = await fs.readdir(dir);
+
+        for (const file of files) {
             const filePath = path.join(dir, file);
-            const stat = fs.statSync(filePath);
+            const stat = await fs.stat(filePath);
             if (stat.isDirectory()) {
-                getAllFiles(filePath);
+                await getAllFiles(filePath);
             } else if (file.endsWith('.ts') || file.endsWith('.tsx')) {
                 entryPoints.push(filePath);
             }
-        });
+        }
     };
-    getAllFiles(sourceDir);
+    await getAllFiles(sourceDir);
     return entryPoints;
 };
 
 // 生产环境构建
 if (isProduction) {
-    console.log('🚀 正在构建生产环境...');
-    const entryPoints = getEntryPoints();
+    (async () => { // 异步IIFE处理顶层await
+        console.log('🚀 正在构建生产环境...');
+        try {
+            const entryPoints = await getEntryPoints();
+            // 分析所有文件依赖
+            entryPoints.forEach(analyzeDependencies);
 
-    // 分析所有文件的依赖关系
-    entryPoints.forEach(analyzeDependencies);
-
-    await esbuild.build({
-        ...baseBuildOptions,
-        entryPoints: entryPoints,
-        outbase: sourceDir,
-        outdir: outputDir,
-        entryNames: '[dir]/[name]',
-    }).then(() => {
-        console.log('✅ 生产环境构建完成');
-        process.exit(0);
-    }).catch((error) => {
-        console.error('❌ 生产环境构建失败:', error.message);
-        process.exit(1);
-    });
+            await esbuild.build({
+                ...baseBuildOptions,
+                entryPoints: entryPoints,
+                outbase: sourceDir,
+                outdir: outputDir,
+                entryNames: '[dir]/[name]',
+            });
+            console.log('✅ 生产环境构建完成');
+            process.exit(0);
+        } catch (error) {
+            console.error('❌ 生产环境构建失败:', error.message);
+            process.exit(1);
+        }
+    })();
 }
 // 开发环境监听
 else {
-    console.log('🚀 开发模式监听中...');
+    (async () => {
+        console.log('🚀 开发模式监听中...');
+        try {
+            // 初始全量构建
+            const entryPoints = await getEntryPoints();
+            entryPoints.forEach(analyzeDependencies);
 
-    // 初始全量构建
-    const entryPoints = getEntryPoints();
-    // 分析所有文件的依赖关系
-    entryPoints.forEach(analyzeDependencies);
+            await esbuild.build({
+                ...baseBuildOptions,
+                entryPoints: entryPoints,
+                outbase: sourceDir,
+                outdir: outputDir,
+                entryNames: '[dir]/[name]',
+            });
+            console.log('✅ 初始构建完成，监听文件变化...');
 
-    await esbuild.build({
-        ...baseBuildOptions,
-        entryPoints: entryPoints,
-        outbase: sourceDir,
-        outdir: outputDir,
-        entryNames: '[dir]/[name]',
-    }).then(() => {
-        console.log('✅ 初始构建完成，监听文件变化...');
-
-        // 文件监听
-        const watcher = chokidar.watch(sourceDir, {
-            ignored: /(^|[\/\\])\../,
-            persistent: true,
-            ignoreInitial: true,
-            depth: 10
-        });
-
-        watcher
-            .on('add', (filePath) => {
-                if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
-                    console.log(`📄 添加文件: ${path.relative(sourceDir, filePath)}`);
-                    analyzeDependencies(filePath);
-                    compileFile(filePath);
-                }
-            })
-            .on('change', (filePath) => {
-                if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
-                    console.log(`✏️  文件变更: ${path.relative(sourceDir, filePath)}`);
-                    compileFileWithDependents(filePath);
-                }
-            })
-            .on('unlink', (filePath) => {
-                if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
-                    console.log(`❌ 删除文件: ${path.relative(sourceDir, filePath)}`);
-                    removeoutputFile(filePath);
-                }
-            })
-            .on('error', (error) => {
-                console.error(`❌ 监听错误: ${error}`);
+            // 文件监听（使用集中配置的忽略规则）
+            const watcher = chokidar.watch(sourceDir, {
+                ignored: watchIgnore,
+                persistent: true,
+                ignoreInitial: true,
+                depth: 10
             });
 
-        console.log(`👀 正在监听目录: ${sourceDir}`);
+            watcher
+                .on('add', async (filePath) => {
+                    if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
+                        console.log(`📄 添加文件: ${path.relative(sourceDir, filePath)}`);
+                        analyzeDependencies(filePath);
+                        await compileFile(filePath);
+                    }
+                })
+                .on('change', async (filePath) => {
+                    if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
+                        console.log(`✏️  文件变更: ${path.relative(sourceDir, filePath)}`);
+                        await compileFileWithDependents(filePath);
+                    }
+                })
+                .on('unlink', async (filePath) => {
+                    if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
+                        console.log(`❌ 删除文件: ${path.relative(sourceDir, filePath)}`);
+                        await removeOutputFile(filePath);
+                    }
+                })
+                .on('error', (error) => {
+                    console.error(`❌ 监听错误: ${error}`);
+                });
 
-        // 优雅退出
-        process.on('SIGINT', () => {
-            console.log('\n👋 监听已停止');
-            watcher.close();
-            process.exit(0);
-        });
-    }).catch((error) => {
-        console.error('❌ 初始构建失败:', error.message);
-        process.exit(1);
-    });
+            console.log(`👀 正在监听目录: ${sourceDir}`);
+
+            // 优雅退出
+            process.on('SIGINT', () => {
+                console.log('\n👋 监听已停止');
+                watcher.close();
+                process.exit(0);
+            });
+        } catch (error) {
+            console.error('❌ 初始构建失败:', error.message);
+            process.exit(1);
+        }
+    })();
 }
