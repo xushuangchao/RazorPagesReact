@@ -17,6 +17,7 @@ app.UseRouting();
 
 app.UseAuthorization();
 
-app.MapRazorPages();
+app.MapRazorPages()
+    .CacheOutput(policy => policy.Expire(TimeSpan.FromMinutes(10))); // 10分钟缓存
 
 app.Run();
