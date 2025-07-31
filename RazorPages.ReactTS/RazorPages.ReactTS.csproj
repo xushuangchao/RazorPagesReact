@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+    </PropertyGroup>
+    
+    <!--JSX构建集成-->
+    <Target Name="BuildJSX" BeforeTargets="BeforeBuild">
+        <Exec Command="npm run build:jsx" Condition="'$(Configuration)' == 'Release'" />
+    </Target>
+    
+    <Target Name="CleanJSX" AfterTargets="Clean">
+        <RemoveDir Directories="$(ProjectDir)wwwroot\js" />
+    </Target>
+    
+    <ItemGroup>
+        <Content Include="PagesScripts\**" />
+        <PackageReference Include="Microsoft.VisualStudio.Web.CodeGeneration.Design" Version="8.0.7" />
+    </ItemGroup>
+
+</Project>
