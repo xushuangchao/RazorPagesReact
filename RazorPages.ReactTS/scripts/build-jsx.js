@@ -46,7 +46,11 @@ const baseBuildOptions = {
     // 别名配置
     alias: alias,
     treeShaking: isProduction, // 生产环境启用树摇
-    legalComments: 'external' // 生产环境移除注释
+    legalComments: 'external', // 生产环境移除注释
+    define: {
+        // 注入环境变量，替换代码中的 process.env.NODE_ENV
+        'process.env.NODE_ENV': isProduction ? '"production"' : '"development"'
+    }
 };
 
 /**

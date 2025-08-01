@@ -8,8 +8,12 @@ function getAxios() {
         }
     }
     
-    return window.axios;
+    return waindow.axios;
 }
+
+const isDevelopment = typeof process !== 'undefined'
+    ? process.env.NODE_ENV === 'development'
+    : false; // 浏览器环境默认非开发模式
 
 const axiosInstance = getAxios();
 
@@ -30,7 +34,7 @@ http.interceptors.request.use(config => {
     }
     
     // 开发环境日志
-    if (process.env.Node_ENV == 'development') {
+    if (isDevelopment) {
         console.log(`[请求] ${config.method?.toUpperCase()} ${config.url}`, config);
     }
     
@@ -43,7 +47,7 @@ http.interceptors.request.use(config => {
 // 响应拦截器
 http.interceptors.response.use(response => {
     // 开发环境日志
-    if (process.env.Node_ENV == 'development') {
+    if (isDevelopment) {
         console.log(`[响应] ${response.config.url}`, response);
     }
     return response.data;
