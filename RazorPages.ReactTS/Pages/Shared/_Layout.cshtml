@@ -62,6 +62,10 @@
     // 全局初始化
     document.addEventListener('DOMContentLoaded', function () {
         // 将库挂载到window
+        window.reactProps = {
+            "Title": "@ViewData["Title"]",
+            "Date": "@DateTime.Now"
+        };
         window.React = React;
         window.ReactDOM = ReactDOM;
         window.axios = axios;
