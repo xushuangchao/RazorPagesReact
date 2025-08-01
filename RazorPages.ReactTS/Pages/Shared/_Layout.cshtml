@@ -78,12 +78,10 @@
             // 创建加载序列（先工具后组件）
             const loadQueue = [];
 
-            // --如果是 httpClient 相关组件，先加载工具类--
-            // if (scriptPath.includes('User'))
-            //     loadQueue.push('/js/utils/httpClient.js');
             // 始终优先加载工具类
-            loadQueue.push('/js/utils/httpClient.js');
-            loadQueue.push('/js/utils/Test.js');
+            // 这里不需要了，依赖资源会构建到对应的组件中，如果代码捆绑为false，需要引入下面的脚本
+            // loadQueue.push('/js/utils/httpClient.js');
+            // loadQueue.push('/js/utils/Test.js');
 
             loadQueue.push(scriptPath);
 

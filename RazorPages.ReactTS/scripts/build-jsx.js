@@ -34,6 +34,7 @@ const baseBuildOptions = {
     bundle: true,
     target: buildTargets,
     format: 'esm',
+    // splitting: true, // 启用代码分割
     loader: {
         '.ts': 'ts',
         '.tsx': 'tsx'
@@ -288,6 +289,10 @@ const getEntryPoints = async () => {
 
 // 生产环境构建
 if (isProduction) {
+    baseBuildOptions.minifyWhitespace = true;
+    baseBuildOptions.minifyIdentifiers = true;
+    baseBuildOptions.minifySyntax = true;
+    
     (async () => { // 异步IIFE处理顶层await
         console.log('🚀 正在构建生产环境...');
         try {

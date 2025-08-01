@@ -4,11 +4,11 @@ function getAxios() {
             return require('axios');
         }
         catch (e) {
-            console.warn('无法通过 require 加载 axios，将使用全局 axiox');
+            console.warn('无法通过 require 加载 axios，将使用全局 axios');
         }
     }
     
-    return waindow.axios;
+    return window.axios;
 }
 
 const isDevelopment = typeof process !== 'undefined'
