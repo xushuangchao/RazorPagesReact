@@ -189,7 +189,7 @@ const compileFile = async (filePath) => {
             entryNames: path.join(path.dirname(relativePath), '[name]'),
         });
 
-        const outPath = path.join(outputDir, path.dirname(relativePath), path.basename(fullPath, path.extName(fullPath)) + '.js');
+        const outPath = path.join(outputDir, path.dirname(relativePath), path.basename(fullPath, path.extname(fullPath)) + '.js');
         console.log(`✅ 编译成功: ${relativePath} -> ${path.relative(outputDir, outPath)}`);
 
         // 分析依赖
